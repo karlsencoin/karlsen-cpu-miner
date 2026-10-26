@@ -8,7 +8,7 @@ GPUs are far faster, but CPUs are everywhere. When a large pool goes down and th
 
 ## Features
 
-- **Setup wizard.** Run the miner without arguments: enter your wallet address, pick a pool, solo mining through a karlsen-stratum-bridge, or solo mining directly against karlsend, then threads and dataset storage. Answers are saved to `karlsen-cpu-miner.json` next to the executable; `--wizard` runs it again.
+- **Setup wizard.** Run the miner without arguments: enter your wallet address, pick a pool, solo mining through a karlsen-stratum-bridge, or solo mining directly against karlsend, then threads and dataset storage. Pressing Enter at every step mines to the Karlsen treasury address on WoolyPooly with all CPU threads and a dataset file. Answers are saved to `karlsen-cpu-miner.json` next to the executable; `--wizard` runs it again.
 - **Connection modes**
   - Pools over `stratum+tcp://` or TLS `stratum+ssl://` (built-in list below, any other pool via custom URL)
   - Solo through [karlsen-stratum-bridge](https://github.com/karlsencoin/karlsen-stratum-bridge) (`stratum+tcp://127.0.0.1:5555`)

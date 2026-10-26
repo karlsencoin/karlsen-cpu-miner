@@ -8,7 +8,7 @@ use karlsen_addresses::Address;
 use crate::config::{Connection, MinerConfig};
 use crate::dataset::{default_dataset_path, DatasetMode};
 use crate::fishhash::FULL_DATASET_BYTES;
-use crate::pools::{LOCAL_BRIDGE_URL, LOCAL_NODE_URL, POOLS};
+use crate::pools::{LOCAL_BRIDGE_URL, LOCAL_NODE_URL, POOLS, TREASURY_ADDRESS};
 
 fn read_line(prompt: &str) -> Result<String> {
     print!("{prompt}");
@@ -66,9 +66,11 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
     // Step 1: wallet address.
     section("Step 1/5 · Wallet address");
     println!("  Rewards are paid to this Karlsen address (starts with karlsen:).");
+    println!("  Press Enter to donate the rewards to the Karlsen treasury:");
+    println!("  {TREASURY_ADDRESS}");
     let mining_address = loop {
-        let default = previous.map(|c| c.mining_address.as_str()).unwrap_or("");
-        let answer = if default.is_empty() { read_line("  Wallet address: ")? } else { prompt_default("Wallet address", default)? };
+        let default = previous.map(|c| c.mining_address.as_str()).unwrap_or(TREASURY_ADDRESS);
+        let answer = prompt_default("Wallet address", default)?;
         match Address::try_from(answer.as_str()) {
             Ok(address) if address.prefix.to_string() == "karlsen" => break answer,
             Ok(_) => println!("  That is not a mainnet address (it must start with karlsen:)."),
@@ -161,7 +163,8 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
     let config = MinerConfig { mining_address, connection, worker_name, threads, dataset_mode, dataset_file };
 
     section("Summary");
-    println!("  Wallet:  {}", config.mining_address);
+    let treasury_note = if config.mining_address == TREASURY_ADDRESS { " (Karlsen treasury)" } else { "" };
+    println!("  Wallet:  {}{treasury_note}", config.mining_address);
     println!("  Mining:  {}", config.connection.describe());
     println!("  Worker:  {}", config.worker_name);
     println!("  Threads: {}", config.threads.map(|t| t.to_string()).unwrap_or_else(|| format!("{logical} (all)")));
