@@ -2,6 +2,8 @@
 
 CPU miner for [Karlsen](https://karlsencoin.org) (KarlsenHashV2 / FishHashPlus), written in Rust.
 
+Versioning continues from [karlsen-network/karlsen-miner-cpu](https://github.com/karlsen-network/karlsen-miner-cpu), whose last release was v0.2.0 (Leon1777, July 2025). This is a new Rust implementation; v0.3.0 is its first release.
+
 GPUs are far faster, but CPUs are everywhere. When a large pool goes down and the network loses most of its hashrate, CPU miners on servers, desktops and (later) phones keep blocks coming. This miner is built for that role.
 
 ## Features
