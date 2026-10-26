@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Re-run packaging for an existing tag from the Actions tab ("Run workflow").
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build and upload assets for (e.g. v0.3.0)"
+        required: true
 
 permissions:
   contents: write
@@ -31,7 +37,8 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="karlsen-cpu-miner-${GITHUB_REF_NAME}-${{ matrix.asset }}"
+          tag="${{ inputs.tag || github.ref_name }}"
+          name="karlsen-cpu-miner-${tag}-${{ matrix.asset }}"
           mkdir "$name"
           cp README.md LICENSE "$name/"
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -44,7 +51,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
-          path: karlsen-cpu-miner-*.*
+          path: |
+            karlsen-cpu-miner-*.zip
+            karlsen-cpu-miner-*.tar.gz
 
   publish:
     needs: build
@@ -54,11 +63,12 @@ jobs:
         with:
           merge-multiple: true
       - name: Checksums
-        run: sha256sum karlsen-cpu-miner-* > SHA256SUMS && cat SHA256SUMS
+        run: sha256sum karlsen-cpu-miner-*.zip karlsen-cpu-miner-*.tar.gz > SHA256SUMS && cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          name: karlsen-cpu-miner ${{ github.ref_name }}
-          generate_release_notes: true
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: karlsen-cpu-miner ${{ inputs.tag || github.ref_name }}
           files: |
-            karlsen-cpu-miner-*
+            karlsen-cpu-miner-*.zip
+            karlsen-cpu-miner-*.tar.gz
             SHA256SUMS
