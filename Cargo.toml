@@ -1,0 +1,44 @@
+[package]
+name = "karlsen-cpu-miner"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88.0"
+description = "CPU miner for Karlsen (KarlsenHashV2 / FishHashPlus) with solo gRPC and stratum modes"
+license = "ISC"
+repository = "https://github.com/karlsencoin/karlsen-cpu-miner"
+authors = ["K-City7 <263413537+K-City7@users.noreply.github.com>"]
+
+[dependencies]
+# Karlsen node crates, pinned to the rusty-karlsen v3.3.1 release so block,
+# header and transaction types (including the `mass` field) match the node.
+karlsen-addresses = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+karlsen-consensus-core = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+karlsen-grpc-client = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+karlsen-hashes = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+karlsen-math = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+karlsen-rpc-core = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+
+anyhow = "1"
+blake3 = "1.5"
+clap = { version = "4.5", features = ["derive"] }
+core_affinity = "0.8"
+log = "0.4"
+env_logger = "0.11"
+memmap2 = "0.9"
+num_cpus = "1.16"
+rand = "0.8"
+serde_json = "1"
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+karlsen-pow = { git = "https://github.com/karlsencoin/rusty-karlsen", tag = "v3.3.1" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,118 @@
+# karlsen-cpu-miner
+
+CPU miner for [Karlsen](https://karlsencoin.org) (KarlsenHashV2 / FishHashPlus), written in Rust.
+
+GPUs are far faster, but CPUs are everywhere. When a large pool goes down and the network loses most of its hashrate, CPU miners on servers, desktops and (later) phones keep blocks coming. This miner is built for that role.
+
+## Features
+
+- **Two connection modes**
+  - `--node grpc://host:42110` — solo mining directly against `karlsend`
+  - `--stratum stratum+tcp://host:port` — mining through [karlsen-stratum-bridge](https://github.com/karlsencoin/karlsen-stratum-bridge) or a pool
+- **Mass-preserving block submission (Crescendo-ready).** In solo mode the block template from `GetBlockTemplate` is submitted back exactly as received, with only the header nonce changed, so every transaction keeps the `mass` value the node computed. The miner checks this before every submission and refuses to send a block whose masses differ from the template. This fixes the node warning *"The RPC submitted block … contains a transaction … with mass = 0 … prior to the Crescendo hardfork activation"* that older miners trigger.
+- **Bit-exact with the node.** The PoW is a re-implementation of `karlsen_pow::State` from rusty-karlsen v3.3.1 and is tested against it on every build.
+- **Latency-hiding hash kernel.** Eight nonces are hashed in lock-step per thread and their 128-byte dataset reads are prefetched together, so each core keeps many memory requests in flight.
+- **Three dataset modes**
+  - `memory` (default): the 4.5 GiB dataset is built in RAM at start-up, with transparent huge pages on Linux
+  - `file`: built once into a file, then memory-mapped; instant restarts and one shared copy for several processes
+  - `light`: no dataset (≈72 MiB light cache only); very slow, for testing and tiny devices
+- Thread pinning, per-thread nonce chunks, a CPU re-check of every block candidate before submission, automatic stratum reconnect.
+
+## Requirements
+
+| | Minimum |
+|---|---|
+| Free RAM | **about 5 GiB** for `memory` / `file` modes (4,831,835,776-byte dataset plus 72 MiB light cache) |
+| CPU | any x86-64 or ARM64 CPU; more cores and more memory channels mean more hashrate |
+| Node (solo mode) | karlsend v3.3.x with `--utxoindex` and gRPC reachable |
+
+FishHashPlus is memory-bound: hashrate depends mostly on memory latency and on how many requests the CPU can keep in flight, not on clock speed or AVX width.
+
+## Build
+
+```bash
+# protoc is needed by the karlsend gRPC client crates
+sudo apt-get install -y protobuf-compiler
+cargo build --release
+```
+
+The binary is `target/release/karlsen-cpu-miner`.
+
+## Usage
+
+Solo mining against a local node:
+
+```bash
+karlsen-cpu-miner \
+  --mining-address karlsen:qrehkrtd3zwcl55r94m5g76sapaez9488a4kcjlh20evtgnx8qpz5lh50khra \
+  --node grpc://127.0.0.1:42110
+```
+
+Through a local karlsen-stratum-bridge:
+
+```bash
+karlsen-cpu-miner \
+  --mining-address karlsen:qrehkrtd3zwcl55r94m5g76sapaez9488a4kcjlh20evtgnx8qpz5lh50khra \
+  --stratum stratum+tcp://127.0.0.1:5555 \
+  --worker-name vps
+```
+
+Keep the dataset in a file so restarts are instant:
+
+```bash
+karlsen-cpu-miner ... --dataset-mode file --dataset-file /var/lib/karlsen-cpu-miner/fishhash-plus-dataset.bin
+```
+
+Benchmark without a node or pool:
+
+```bash
+karlsen-cpu-miner --mining-address karlsen:... --benchmark 60
+```
+
+### Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `-a, --mining-address` | — | Address that receives the rewards |
+| `--node` | — | karlsend gRPC endpoint (solo mode) |
+| `--stratum` | — | Stratum endpoint (bridge / pool mode) |
+| `--worker-name` | `karlsen-cpu-miner` | Worker name sent to the stratum server |
+| `-t, --threads` | all logical CPUs | Mining threads |
+| `--no-pin` | off | Do not pin threads to cores |
+| `--dataset-mode` | `memory` | `memory`, `file` or `light` |
+| `--dataset-file` | `~/.cache/karlsen-cpu-miner/fishhash-plus-dataset.bin` | File for `file` mode |
+| `--build-threads` | all logical CPUs | Threads used to build the dataset |
+| `--poll-interval-ms` | `250` | Solo mode template refresh interval |
+| `--mine-when-not-synced` | off | Keep mining while the node is syncing (testnets only) |
+| `--benchmark <seconds>` | — | Measure hashrate and exit |
+
+Log verbosity follows `RUST_LOG` (for example `RUST_LOG=debug`).
+
+## How mass propagation works
+
+`GetBlockTemplate` returns each transaction with a `mass` field filled in by the node. A miner must hand the same block back to `SubmitBlock` with those values intact. Miners that convert the template through an older wire format without a `mass` field submit `mass = 0`; the node accepts that today with a warning and will reject it after the Crescendo hardfork.
+
+This miner keeps the template as an `RpcRawBlock` from `karlsen-rpc-core` and only writes `header.nonce` before submitting it. `MassAudit` in `src/node_client.rs`:
+
+1. warns if the node itself ever sends a non-coinbase transaction with `mass = 0`;
+2. compares the mass list of the block about to be submitted with the template and refuses to submit on any mismatch;
+3. logs the total propagated mass with every accepted block.
+
+In stratum mode the bridge builds and submits blocks; karlsen-stratum-bridge keeps mass because it converts templates through consensus `Block` values, which carry each transaction's mass.
+
+## Tests
+
+```bash
+cargo test --release
+```
+
+`pow::node_equivalence` builds the light cache on both sides and checks that this miner's hashes and dataset items are identical to rusty-karlsen's.
+
+## Community
+
+- Discord: https://discord.gg/QyrvshRBJV
+- Telegram: https://t.me/KarlsenCoin
+
+## License
+
+ISC
