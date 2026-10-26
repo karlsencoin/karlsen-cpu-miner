@@ -6,9 +6,11 @@ GPUs are far faster, but CPUs are everywhere. When a large pool goes down and th
 
 ## Features
 
-- **Two connection modes**
-  - `--node grpc://host:42110` — solo mining directly against `karlsend`
-  - `--stratum stratum+tcp://host:port` — mining through [karlsen-stratum-bridge](https://github.com/karlsencoin/karlsen-stratum-bridge) or a pool
+- **Setup wizard.** Run the miner without arguments: enter your wallet address, pick a pool, solo mining through a karlsen-stratum-bridge, or solo mining directly against karlsend, then threads and dataset storage. Answers are saved to `karlsen-cpu-miner.json` next to the executable; `--wizard` runs it again.
+- **Connection modes**
+  - Pools over `stratum+tcp://` or TLS `stratum+ssl://` (WoolyPooly built in, any other pool via custom URL)
+  - Solo through [karlsen-stratum-bridge](https://github.com/karlsencoin/karlsen-stratum-bridge) (`stratum+tcp://127.0.0.1:5555`)
+  - Solo directly to `karlsend` over gRPC (`grpc://127.0.0.1:42110`)
 - **Mass-preserving block submission (Crescendo-ready).** In solo mode the block template from `GetBlockTemplate` is submitted back exactly as received, with only the header nonce changed, so every transaction keeps the `mass` value the node computed. The miner checks this before every submission and refuses to send a block whose masses differ from the template. This fixes the node warning *"The RPC submitted block … contains a transaction … with mass = 0 … prior to the Crescendo hardfork activation"* that older miners trigger.
 - **Bit-exact with the node.** The PoW is a re-implementation of `karlsen_pow::State` from rusty-karlsen v3.3.1 and is tested against it on every build.
 - **Latency-hiding hash kernel.** Eight nonces are hashed in lock-step per thread and their 128-byte dataset reads are prefetched together, so each core keeps many memory requests in flight.
@@ -39,6 +41,14 @@ cargo build --release
 The binary is `target/release/karlsen-cpu-miner`.
 
 ## Usage
+
+First run (wizard):
+
+```bash
+./karlsen-cpu-miner
+```
+
+Command-line flags override the saved settings, and a full set of flags skips the wizard entirely.
 
 Solo mining against a local node:
 
@@ -73,13 +83,14 @@ karlsen-cpu-miner --mining-address karlsen:... --benchmark 60
 
 | Option | Default | Meaning |
 |---|---|---|
+| `--wizard` | off | Run the setup wizard again |
 | `-a, --mining-address` | — | Address that receives the rewards |
 | `--node` | — | karlsend gRPC endpoint (solo mode) |
-| `--stratum` | — | Stratum endpoint (bridge / pool mode) |
+| `--stratum` | — | Stratum endpoint (bridge / pool mode), `stratum+tcp://` or `stratum+ssl://` |
 | `--worker-name` | `karlsen-cpu-miner` | Worker name sent to the stratum server |
 | `-t, --threads` | all logical CPUs | Mining threads |
 | `--no-pin` | off | Do not pin threads to cores |
-| `--dataset-mode` | `memory` | `memory`, `file` or `light` |
+| `--dataset-mode` | `file` (wizard default) | `memory`, `file` or `light` |
 | `--dataset-file` | `~/.cache/karlsen-cpu-miner/fishhash-plus-dataset.bin` | File for `file` mode |
 | `--build-threads` | all logical CPUs | Threads used to build the dataset |
 | `--poll-interval-ms` | `250` | Solo mode template refresh interval |

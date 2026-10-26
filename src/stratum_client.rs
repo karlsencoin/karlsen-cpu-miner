@@ -45,8 +45,36 @@ impl Default for Session {
     }
 }
 
-fn host_port(url: &str) -> String {
-    url.trim_start_matches("stratum+tcp://").trim_start_matches("stratum://").trim_start_matches("tcp://").to_string()
+/// Splits a stratum URL into (host:port, use TLS).
+fn parse_url(url: &str) -> (String, bool) {
+    for (scheme, tls) in [("stratum+ssl://", true), ("stratum+tls://", true), ("ssl://", true), ("stratum+tcp://", false), ("stratum://", false), ("tcp://", false)] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            return (rest.to_string(), tls);
+        }
+    }
+    (url.to_string(), false)
+}
+
+trait StratumStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> StratumStream for T {}
+
+async fn open_stream(address: &str, tls: bool) -> Result<Box<dyn StratumStream>> {
+    let tcp = TcpStream::connect(address).await.with_context(|| format!("connecting to {address}"))?;
+    tcp.set_nodelay(true)?;
+    if !tls {
+        return Ok(Box::new(tcp));
+    }
+    let host = address.rsplit_once(':').map(|(h, _)| h).unwrap_or(address).to_string();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let server_name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| anyhow!("invalid TLS host name {host}"))?;
+    let stream = connector.connect(server_name, tcp).await.with_context(|| format!("TLS handshake with {host}"))?;
+    Ok(Box::new(stream))
 }
 
 fn parse_extranonce(hex: &str) -> Result<(u64, u64)> {
@@ -102,11 +130,10 @@ async fn session(
     solutions: &mut UnboundedReceiver<Solution>,
     shutdown: &AtomicBool,
 ) -> Result<()> {
-    let address = host_port(&config.url);
-    let stream = TcpStream::connect(&address).await.with_context(|| format!("connecting to {address}"))?;
-    stream.set_nodelay(true)?;
-    info!("Connected to stratum {address}");
-    let (read_half, mut write_half) = stream.into_split();
+    let (address, tls) = parse_url(&config.url);
+    let stream = open_stream(&address, tls).await?;
+    info!("Connected to stratum {address}{}", if tls { " (TLS)" } else { "" });
+    let (read_half, mut write_half) = tokio::io::split(stream);
     let mut lines = BufReader::new(read_half).lines();
 
     let identity = format!("{}.{}", config.mining_address, config.worker_name);
@@ -141,25 +168,21 @@ async fn session(
                 if let Some(method) = message.get("method").and_then(Value::as_str) {
                     let params = message.get("params").cloned().unwrap_or(Value::Null);
                     match method {
-                        "mining.set_extranonce" => {
+                        "mining.set_extranonce" | "set_extranonce" => {
                             let hex = params.get(0).and_then(Value::as_str).unwrap_or("");
                             let (prefix, mask) = parse_extranonce(hex)?;
                             state.extranonce_prefix = prefix;
                             state.extranonce_free_mask = mask;
                             info!("Extranonce set to '{hex}'");
                         }
-                        "mining.set_difficulty" => {
+                        "mining.set_difficulty" | "set_difficulty" => {
                             if let Some(d) = params.get(0).and_then(Value::as_f64) {
                                 state.difficulty = d;
                                 info!("Share difficulty set to {d}");
                             }
                         }
-                        "mining.notify" => {
-                            let job_id = match params.get(0) {
-                                Some(Value::String(s)) => s.clone(),
-                                Some(v) => v.to_string(),
-                                None => bail!("mining.notify without job id"),
-                            };
+                        "mining.notify" | "notify" => {
+                            let job_id = params.get(0).cloned().ok_or_else(|| anyhow!("mining.notify without job id"))?;
                             let pre_pow = parse_pre_pow(params.get(1).unwrap_or(&Value::Null))?;
                             let timestamp = params.get(2).and_then(Value::as_u64).ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
                             let share_target = share_target_from_difficulty(state.difficulty);
@@ -208,6 +231,13 @@ async fn session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_schemes() {
+        assert_eq!(parse_url("stratum+ssl://pool.woolypooly.com:3132"), ("pool.woolypooly.com:3132".into(), true));
+        assert_eq!(parse_url("stratum+tcp://127.0.0.1:5555"), ("127.0.0.1:5555".into(), false));
+        assert_eq!(parse_url("127.0.0.1:5555"), ("127.0.0.1:5555".into(), false));
+    }
 
     #[test]
     fn extranonce_two_bytes() {

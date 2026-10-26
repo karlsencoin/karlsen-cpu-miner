@@ -27,7 +27,11 @@ env_logger = "0.11"
 memmap2 = "0.9"
 num_cpus = "1.16"
 rand = "0.8"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 

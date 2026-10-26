@@ -19,8 +19,9 @@ const NONCE_CHUNK: u64 = (LANES as u64) * 32;
 pub enum WorkOrigin {
     /// Solo mining: the block template as received from GetBlockTemplate.
     Node { template: karlsen_rpc_core::RpcRawBlock },
-    /// Pool / bridge mining: stratum job id.
-    Stratum { job_id: String },
+    /// Pool / bridge mining: stratum job id, echoed back exactly as the server sent it
+    /// (some servers use strings, others numbers).
+    Stratum { job_id: serde_json::Value },
 }
 
 pub struct WorkUnit {
