@@ -8,7 +8,7 @@ GPUs are far faster, but CPUs are everywhere. When a large pool goes down and th
 
 - **Setup wizard.** Run the miner without arguments: enter your wallet address, pick a pool, solo mining through a karlsen-stratum-bridge, or solo mining directly against karlsend, then threads and dataset storage. Answers are saved to `karlsen-cpu-miner.json` next to the executable; `--wizard` runs it again.
 - **Connection modes**
-  - Pools over `stratum+tcp://` or TLS `stratum+ssl://` (WoolyPooly built in, any other pool via custom URL)
+  - Pools over `stratum+tcp://` or TLS `stratum+ssl://` (built-in list below, any other pool via custom URL)
   - Solo through [karlsen-stratum-bridge](https://github.com/karlsencoin/karlsen-stratum-bridge) (`stratum+tcp://127.0.0.1:5555`)
   - Solo directly to `karlsend` over gRPC (`grpc://127.0.0.1:42110`)
 - **Mass-preserving block submission (Crescendo-ready).** In solo mode the block template from `GetBlockTemplate` is submitted back exactly as received, with only the header nonce changed, so every transaction keeps the `mass` value the node computed. The miner checks this before every submission and refuses to send a block whose masses differ from the template. This fixes the node warning *"The RPC submitted block … contains a transaction … with mass = 0 … prior to the Crescendo hardfork activation"* that older miners trigger.
@@ -39,6 +39,19 @@ cargo build --release
 ```
 
 The binary is `target/release/karlsen-cpu-miner`.
+
+## Built-in pools
+
+| Pool | Payout | Stratum |
+|---|---|---|
+| WoolyPooly | PPLNS, 0.9% | `stratum+ssl://pool.woolypooly.com:3132` |
+| TazMining (Switzerland) | PPLNS, 0.75% | `stratum+tcp://pool.tazmining.ch:7260` |
+| Cedric-Crispin | PPLNS, 0.1% | `stratum+ssl://karlsencoin.cedric-crispin.com:4155` (SSL) · `stratum+tcp://karlsencoin.cedric-crispin.com:4154` |
+| NushyPool (Europe) | PPS, 1.0% | `stratum+tcp://nushypool.com:40007` |
+
+## Downloads
+
+Prebuilt binaries for Windows, Linux (glibc 2.35+, Ubuntu 22.04 / HiveOS) and macOS are attached to every [release](https://github.com/karlsencoin/karlsen-cpu-miner/releases), with `SHA256SUMS`.
 
 ## Usage
 
