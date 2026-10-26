@@ -69,7 +69,7 @@ Solo mining against a local node:
 
 ```bash
 karlsen-cpu-miner \
-  --mining-address karlsen:qrehkrtd3zwcl55r94m5g76sapaez9488a4kcjlh20evtgnx8qpz5lh50khra \
+  --mining-address karlsen:qzecljlvsd8h3x32ynuttzyya6s26p4p5p0gyztk7p984r25jp0y2s5fpdqhc \
   --node grpc://127.0.0.1:42110
 ```
 
@@ -77,7 +77,7 @@ Through a local karlsen-stratum-bridge:
 
 ```bash
 karlsen-cpu-miner \
-  --mining-address karlsen:qrehkrtd3zwcl55r94m5g76sapaez9488a4kcjlh20evtgnx8qpz5lh50khra \
+  --mining-address karlsen:qzecljlvsd8h3x32ynuttzyya6s26p4p5p0gyztk7p984r25jp0y2s5fpdqhc \
   --stratum stratum+tcp://127.0.0.1:5555 \
   --worker-name vps
 ```
