@@ -138,6 +138,40 @@ fn parse_extranonce(hex: &str) -> Result<(u64, u64)> {
     Ok((value << free_bits, (1u64 << free_bits) - 1))
 }
 
+/// Accepts the job layouts karlsen-stratum-bridge and pools send:
+/// * `[id, [u64; 4] (LE words), timestamp]` — standard
+/// * `[id, "<80 hex>"]` — BzMiner style: 32 header bytes + 8 timestamp bytes (LE)
+/// * `[id, "<64 hex>", timestamp]` — IceRiver style
+fn parse_job(params: &Value) -> Result<([u8; 32], u64)> {
+    let header = params.get(1).ok_or_else(|| anyhow!("mining.notify without header"))?;
+    if let Some(hex) = header.as_str() {
+        let bytes = decode_hex(hex.trim_start_matches("0x"))?;
+        let mut pre_pow = [0u8; 32];
+        return match bytes.len() {
+            40 => {
+                pre_pow.copy_from_slice(&bytes[..32]);
+                Ok((pre_pow, u64::from_le_bytes(bytes[32..40].try_into().unwrap())))
+            }
+            32 => {
+                pre_pow.copy_from_slice(&bytes);
+                let ts = params.get(2).and_then(Value::as_u64).ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
+                Ok((pre_pow, ts))
+            }
+            n => bail!("unsupported mining.notify header ({n} bytes)"),
+        };
+    }
+    let pre_pow = parse_pre_pow(header)?;
+    let ts = params.get(2).and_then(Value::as_u64).ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
+    Ok((pre_pow, ts))
+}
+
+fn decode_hex(hex: &str) -> Result<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        bail!("odd-length hex string");
+    }
+    (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(Into::into)).collect()
+}
+
 fn parse_pre_pow(value: &Value) -> Result<[u8; 32]> {
     let words = value.as_array().ok_or_else(|| anyhow!("mining.notify header is not an array of 4 u64 words"))?;
     if words.len() != 4 {
@@ -199,6 +233,7 @@ async fn session(
     write_half.write_all(msg.as_bytes()).await?;
 
     let mut state = Session::default();
+    let mut jobs_received = 0u64;
     let (mut accepted, mut rejected) = (0u64, 0u64);
     let mut pending_submits = std::collections::HashMap::<u64, u64>::new();
 
@@ -231,8 +266,7 @@ async fn session(
                         }
                         "mining.notify" | "notify" => {
                             let job_id = params.get(0).cloned().ok_or_else(|| anyhow!("mining.notify without job id"))?;
-                            let pre_pow = parse_pre_pow(params.get(1).unwrap_or(&Value::Null))?;
-                            let timestamp = params.get(2).and_then(Value::as_u64).ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
+                            let (pre_pow, timestamp) = parse_job(&params)?;
                             let share_target = share_target_from_difficulty(state.difficulty);
                             // The bridge does not send block bits; it decides itself whether a share is a block.
                             let pow = PowJob::new(&pre_pow, timestamp, Uint256::ZERO, share_target);
@@ -244,9 +278,13 @@ async fn session(
                                 state.extranonce_prefix,
                                 state.extranonce_free_mask,
                             ));
+                            if jobs_received == 0 {
+                                info!("First job received from the pool; mining started");
+                            }
+                            jobs_received += 1;
                             debug!("New job {job_id} (generation {generation})");
                         }
-                        other => debug!("ignoring stratum method {other}"),
+                        other => info!("Ignoring unknown stratum method {other}: {params}"),
                     }
                 } else if let Some(id) = message.get("id").and_then(Value::as_u64) {
                     let ok = message.get("result").map(|r| r.as_bool().unwrap_or(!r.is_null())).unwrap_or(false)
@@ -292,6 +330,19 @@ mod tests {
         let (prefix, mask) = parse_extranonce("abcd").unwrap();
         assert_eq!(prefix, 0xabcd_0000_0000_0000);
         assert_eq!(mask, 0x0000_ffff_ffff_ffff);
+    }
+
+    #[test]
+    fn big_job_hex_matches_word_layout() {
+        // Same header expressed in both formats karlsen-stratum-bridge produces.
+        let header: Vec<u8> = (0u8..32).collect();
+        let words: Vec<u64> = header.chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        let ts = 1_761_000_000_123u64;
+        let mut hex: String = header.iter().map(|b| format!("{b:02x}")).collect();
+        hex.push_str(&ts.to_le_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
+        let a = parse_job(&json!(["1", words, ts])).unwrap();
+        let b = parse_job(&json!(["1", hex])).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

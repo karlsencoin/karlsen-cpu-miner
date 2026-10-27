@@ -178,8 +178,8 @@ fn worker_loop(
                     }
                 }
                 offset += LANES as u64;
+                stats.hashes.fetch_add(LANES as u64, Ordering::Relaxed);
             }
-            stats.hashes.fetch_add(NONCE_CHUNK, Ordering::Relaxed);
         }
     }
     debug!("worker {index} stopped");

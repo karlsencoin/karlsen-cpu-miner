@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use log::{info, warn};
-use memmap2::{Mmap, MmapMut, MmapOptions};
+use memmap2::{MmapMut, MmapOptions};
 
 use crate::fishhash::{
     build_light_cache, calculate_dataset_item, fill_dataset, DatasetSource, LightItem, DATASET_ITEM_BYTES, FULL_DATASET_BYTES,
@@ -46,7 +46,6 @@ pub enum DatasetMode {
 
 enum Storage {
     Anonymous(MmapMut),
-    File(Mmap),
     Light,
 }
 
@@ -68,7 +67,7 @@ impl Dataset {
                 Storage::Light
             }
             DatasetMode::Memory => Storage::Anonymous(build_anonymous(&light_cache, build_threads)?),
-            DatasetMode::File => Storage::File(
+            DatasetMode::File => Storage::Anonymous(
                 open_or_build_file(file_path, &light_cache, build_threads)
                     .with_context(|| format!("dataset file {}", file_path.display()))?,
             ),
@@ -79,7 +78,6 @@ impl Dataset {
     pub fn source(&self) -> DatasetSource<'_> {
         match &self.storage {
             Storage::Anonymous(map) => DatasetSource::Full(&map[..FULL_DATASET_BYTES]),
-            Storage::File(map) => DatasetSource::Full(&map[FILE_DATA_OFFSET..FILE_DATA_OFFSET + FULL_DATASET_BYTES]),
             Storage::Light => DatasetSource::Light(&self.light_cache),
         }
     }
@@ -140,11 +138,7 @@ fn build_into(dst: &mut [u8], light_cache: &[LightItem], threads: usize) {
 
 fn build_anonymous(light_cache: &[LightItem], threads: usize) -> Result<MmapMut> {
     info!("Allocating {} for the FishHashPlus dataset in RAM", human_gib(FULL_DATASET_BYTES));
-    let mut map = MmapOptions::new().len(FULL_DATASET_BYTES).map_anon().context("allocating dataset memory")?;
-    #[cfg(target_os = "linux")]
-    if let Err(err) = map.advise(memmap2::Advice::HugePage) {
-        warn!("Transparent huge pages unavailable for the dataset ({err}); continuing with 4 KiB pages");
-    }
+    let mut map = allocate_dataset()?;
     build_into(&mut map[..], light_cache, threads);
     Ok(map)
 }
@@ -183,14 +177,46 @@ fn verify_samples(data: &[u8], light_cache: &[LightItem]) -> bool {
     })
 }
 
-fn open_or_build_file(path: &Path, light_cache: &[LightItem], threads: usize) -> Result<Mmap> {
+/// Allocates dataset RAM, with transparent huge pages where available.
+fn allocate_dataset() -> Result<MmapMut> {
+    let map = MmapOptions::new().len(FULL_DATASET_BYTES).map_anon().context("allocating dataset memory")?;
+    #[cfg(target_os = "linux")]
+    if let Err(err) = map.advise(memmap2::Advice::HugePage) {
+        warn!("Transparent huge pages unavailable for the dataset ({err}); continuing with 4 KiB pages");
+    }
+    Ok(map)
+}
+
+/// Reads the dataset file into RAM with a progress log.
+///
+/// The dataset is read with random 128-byte accesses, so it must be fully resident: a lazily
+/// faulted memory map would hit the disk on almost every hash (Windows does not pre-fault
+/// mappings), which drops the hashrate to near zero.
+fn load_file_into_memory(path: &Path) -> Result<MmapMut> {
+    let started = Instant::now();
+    info!("Loading dataset file into RAM: {}", human_gib(FULL_DATASET_BYTES));
+    let mut map = allocate_dataset()?;
+    let mut file = File::open(path)?;
+    std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(FILE_DATA_OFFSET as u64))?;
+    const CHUNK: usize = 64 << 20;
+    let mut last_log = Instant::now();
+    let mut done = 0usize;
+    for chunk in map[..].chunks_mut(CHUNK) {
+        file.read_exact(chunk).with_context(|| format!("reading {}", path.display()))?;
+        done += chunk.len();
+        if last_log.elapsed() > Duration::from_secs(5) {
+            info!("Loading dataset file: {:.1}%", done as f64 * 100.0 / FULL_DATASET_BYTES as f64);
+            last_log = Instant::now();
+        }
+    }
+    info!("Dataset loaded into RAM in {:.1}s", started.elapsed().as_secs_f64());
+    Ok(map)
+}
+
+fn open_or_build_file(path: &Path, light_cache: &[LightItem], threads: usize) -> Result<MmapMut> {
     if path.exists() && header_is_valid(path)? {
-        info!("Mapping FishHashPlus dataset file {}", path.display());
-        let file = File::open(path)?;
-        let map = unsafe { MmapOptions::new().populate().map(&file) }.context("memory-mapping dataset file")?;
-        #[cfg(unix)]
-        let _ = map.advise(memmap2::Advice::Random);
-        if verify_samples(&map[FILE_DATA_OFFSET..], light_cache) {
+        let map = load_file_into_memory(path)?;
+        if verify_samples(&map[..], light_cache) {
             info!("Dataset file verified ({} sampled items match)", VERIFY_SAMPLES);
             return Ok(map);
         }
@@ -200,28 +226,22 @@ fn open_or_build_file(path: &Path, light_cache: &[LightItem], threads: usize) ->
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    info!("Creating dataset file {} — {}", path.display(), human_gib(FILE_DATA_OFFSET + FULL_DATASET_BYTES));
+    // Build in RAM, then save a copy to disk for the next start.
+    let mut map = allocate_dataset()?;
+    build_into(&mut map[..], light_cache, threads);
+    if !verify_samples(&map[..], light_cache) {
+        bail!("freshly built dataset failed verification");
+    }
+    info!("Saving dataset to {} — {}", path.display(), human_gib(FILE_DATA_OFFSET + FULL_DATASET_BYTES));
     let mut file = OpenOptions::new()
         .create(true)
-        .read(true)
         .write(true)
         .truncate(true)
         .open(path)
         .with_context(|| format!("creating {}", path.display()))?;
     write_header(&mut file)?;
-    file.set_len((FILE_DATA_OFFSET + FULL_DATASET_BYTES) as u64)?;
-    {
-        let mut map = unsafe { MmapOptions::new().offset(FILE_DATA_OFFSET as u64).len(FULL_DATASET_BYTES).map_mut(&file) }?;
-        build_into(&mut map[..], light_cache, threads);
-        map.flush().context("flushing dataset file")?;
-    }
+    file.write_all(&map[..]).with_context(|| format!("writing {}", path.display()))?;
     file.sync_all()?;
-    drop(file);
-
-    let file = File::open(path)?;
-    let map = unsafe { MmapOptions::new().populate().map(&file) }?;
-    if !verify_samples(&map[FILE_DATA_OFFSET..], light_cache) {
-        bail!("freshly built dataset file {} failed verification", path.display());
-    }
+    info!("Dataset saved; later starts load it instead of rebuilding");
     Ok(map)
 }

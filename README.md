@@ -18,7 +18,7 @@ GPUs are far faster, but CPUs are everywhere. When a large pool goes down and th
 - **Latency-hiding hash kernel.** Eight nonces are hashed in lock-step per thread and their 128-byte dataset reads are prefetched together, so each core keeps many memory requests in flight.
 - **Three dataset modes**
   - `memory` (default): the 4.5 GiB dataset is built in RAM at start-up, with transparent huge pages on Linux
-  - `file`: built once into a file, then memory-mapped; instant restarts and one shared copy for several processes
+  - `file`: built once and saved to a file; later starts read the file into RAM (seconds on an SSD) instead of rebuilding it
   - `light`: no dataset (≈72 MiB light cache only); very slow, for testing and tiny devices
 - Thread pinning, per-thread nonce chunks, a CPU re-check of every block candidate before submission, automatic stratum reconnect.
 
