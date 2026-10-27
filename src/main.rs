@@ -9,6 +9,7 @@
 mod config;
 mod dataset;
 mod fishhash;
+mod memory;
 mod node_client;
 mod pools;
 mod pow;
@@ -31,7 +32,11 @@ use dataset::{default_dataset_path, Dataset, DatasetMode};
 use worker::{spawn_workers, Stats, WorkSlot, WorkerConfig};
 
 #[derive(Parser, Debug)]
-#[command(name = "karlsen-cpu-miner", version, about = "CPU miner for Karlsen (KarlsenHashV2 / FishHashPlus)")]
+#[command(
+    name = "karlsen-cpu-miner",
+    version,
+    about = "CPU miner for Karlsen (KarlsenHashV2 / FishHashPlus)"
+)]
 struct Args {
     /// Run the setup wizard even if a saved configuration exists.
     #[arg(long)]
@@ -86,6 +91,14 @@ struct Args {
     #[arg(long)]
     insecure_tls: bool,
 
+    /// Nonces hashed together per thread (4, 8 or 16). Default: measured at start-up.
+    #[arg(long, value_parser = clap::builder::TypedValueParser::map(clap::builder::PossibleValuesParser::new(["4", "8", "16"]), |s: String| s.parse::<usize>().unwrap()))]
+    lanes: Option<usize>,
+
+    /// Do not use large pages for the dataset (Windows: "Lock pages in memory"; Linux: THP).
+    #[arg(long)]
+    no_large_pages: bool,
+
     /// Run a hashrate benchmark for this many seconds instead of mining.
     #[arg(long)]
     benchmark: Option<u64>,
@@ -100,7 +113,8 @@ fn resolve_config(args: &Args) -> Result<MinerConfig> {
     };
 
     let saved = config::load()?;
-    let complete_from_cli = args.mining_address.is_some() && (cli_connection.is_some() || args.benchmark.is_some());
+    let complete_from_cli =
+        args.mining_address.is_some() && (cli_connection.is_some() || args.benchmark.is_some());
 
     let mut config = if args.wizard || (saved.is_none() && !complete_from_cli) {
         let config = wizard::run(saved.as_ref())?;
@@ -108,7 +122,10 @@ fn resolve_config(args: &Args) -> Result<MinerConfig> {
         println!("  Saved to {}\n", path.display());
         config
     } else if let Some(saved) = saved.filter(|_| !complete_from_cli) {
-        info!("Using saved configuration {} (run with --wizard to change it)", config::config_path().display());
+        info!(
+            "Using saved configuration {} (run with --wizard to change it)",
+            config::config_path().display()
+        );
         saved
     } else {
         MinerConfig {
@@ -145,7 +162,9 @@ fn resolve_config(args: &Args) -> Result<MinerConfig> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).format_timestamp_secs().init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_secs()
+        .init();
     let args = Args::parse();
     let config = resolve_config(&args)?;
 
@@ -155,25 +174,56 @@ async fn main() -> Result<()> {
     let logical = num_cpus::get();
     let threads = config.threads.unwrap_or(logical).max(1);
     let build_threads = args.build_threads.unwrap_or(logical).max(1);
-    info!("karlsen-cpu-miner {} · {} mining threads · dataset mode {:?}", env!("CARGO_PKG_VERSION"), threads, config.dataset_mode);
+    info!(
+        "karlsen-cpu-miner {} · {} mining threads · dataset mode {:?}",
+        env!("CARGO_PKG_VERSION"),
+        threads,
+        config.dataset_mode
+    );
     if args.benchmark.is_none() {
         info!("Mining: {}", config.connection.describe());
     }
 
     let dataset_mode = config.dataset_mode;
-    let dataset_path = config.dataset_file.clone().unwrap_or_else(default_dataset_path);
+    let large_pages = !args.no_large_pages;
+    let dataset_path = config
+        .dataset_file
+        .clone()
+        .unwrap_or_else(default_dataset_path);
     if dataset_mode == DatasetMode::File {
         info!("Dataset file: {}", dataset_path.display());
     }
-    let dataset = tokio::task::spawn_blocking(move || Dataset::load(dataset_mode, &dataset_path, build_threads)).await??;
+    let dataset = tokio::task::spawn_blocking(move || {
+        Dataset::load(dataset_mode, &dataset_path, build_threads, large_pages)
+    })
+    .await??;
+
+    let lanes = match args.lanes {
+        Some(lanes) => lanes,
+        None if dataset_mode == DatasetMode::Light => 8,
+        None => {
+            let dataset = dataset.clone();
+            let pin = !args.no_pin;
+            tokio::task::spawn_blocking(move || {
+                worker::autotune_lanes(&dataset, threads, pin, Duration::from_secs(2))
+            })
+            .await?
+        }
+    };
 
     let slot = Arc::new(WorkSlot::default());
-    let stats = Arc::new(Stats { hashes: AtomicU64::new(0) });
+    let stats = Arc::new(Stats {
+        hashes: AtomicU64::new(0),
+    });
     let shutdown = Arc::new(AtomicBool::new(false));
     let (solution_tx, solution_rx) = tokio::sync::mpsc::unbounded_channel();
 
     let workers = spawn_workers(
-        &WorkerConfig { threads, pin_threads: !args.no_pin },
+        &WorkerConfig {
+            threads,
+            pin_threads: !args.no_pin,
+            lanes,
+        },
         dataset.clone(),
         slot.clone(),
         solution_tx,
@@ -214,7 +264,9 @@ async fn main() -> Result<()> {
                 )
                 .await
             }
-            Connection::Pool { url, .. } | Connection::SoloBridge { url } | Connection::CustomStratum { url } => {
+            Connection::Pool { url, .. }
+            | Connection::SoloBridge { url }
+            | Connection::CustomStratum { url } => {
                 stratum_client::run(
                     stratum_client::StratumConfig {
                         url,
@@ -246,7 +298,10 @@ fn spawn_hashrate_reporter(stats: Arc<Stats>, shutdown: Arc<AtomicBool>) {
             std::thread::sleep(Duration::from_secs(30));
             let count = stats.hashes.load(Ordering::Relaxed);
             let elapsed = last_time.elapsed().as_secs_f64();
-            info!("Hashrate: {}", format_hashrate((count - last_count) as f64 / elapsed));
+            info!(
+                "Hashrate: {}",
+                format_hashrate((count - last_count) as f64 / elapsed)
+            );
             last_count = count;
             last_time = Instant::now();
         }
@@ -264,14 +319,31 @@ pub fn format_hashrate(hs: f64) -> String {
 
 /// Hashes a synthetic job with an unreachable target and reports the rate.
 async fn run_benchmark(slot: &WorkSlot, stats: &Stats, seconds: u64) {
-    let job = pow::PowJob::new(&[0x5a; 32], 1_700_000_000_000, karlsen_math::Uint256::ZERO, karlsen_math::Uint256::ZERO);
+    let job = pow::PowJob::new(
+        &[0x5a; 32],
+        1_700_000_000_000,
+        karlsen_math::Uint256::ZERO,
+        karlsen_math::Uint256::ZERO,
+    );
     let generation = slot.next_generation();
-    slot.publish(worker::WorkUnit::new(generation, job, worker::WorkOrigin::Stratum { job_id: serde_json::Value::Null }, 0, u64::MAX));
+    slot.publish(worker::WorkUnit::new(
+        generation,
+        job,
+        worker::WorkOrigin::Stratum {
+            job_id: serde_json::Value::Null,
+        },
+        0,
+        u64::MAX,
+    ));
     // Skip the first seconds while threads warm up and fault in dataset pages.
     tokio::time::sleep(Duration::from_secs(3)).await;
     let start_count = stats.hashes.load(Ordering::Relaxed);
     let start = Instant::now();
     tokio::time::sleep(Duration::from_secs(seconds)).await;
     let hashes = stats.hashes.load(Ordering::Relaxed) - start_count;
-    info!("Benchmark: {} over {:.1}s", format_hashrate(hashes as f64 / start.elapsed().as_secs_f64()), start.elapsed().as_secs_f64());
+    info!(
+        "Benchmark: {} over {:.1}s",
+        format_hashrate(hashes as f64 / start.elapsed().as_secs_f64()),
+        start.elapsed().as_secs_f64()
+    );
 }

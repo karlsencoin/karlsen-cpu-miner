@@ -106,6 +106,8 @@ karlsen-cpu-miner --mining-address karlsen:... --benchmark 60
 | `--worker-name` | `karlsen-cpu-miner` | Worker name sent to the stratum server |
 | `-t, --threads` | all logical CPUs | Mining threads |
 | `--no-pin` | off | Do not pin threads to cores |
+| `--lanes` | measured at start | Nonces hashed together per thread: 4, 8 or 16. By default each is benchmarked for 2 s at start-up and the fastest is used |
+| `--no-large-pages` | off | Keep the dataset on normal 4 KiB pages |
 | `--dataset-mode` | `file` (wizard default) | `memory`, `file` or `light` |
 | `--dataset-file` | `~/.cache/karlsen-cpu-miner/fishhash-plus-dataset.bin` | File for `file` mode |
 | `--build-threads` | all logical CPUs | Threads used to build the dataset |
@@ -114,6 +116,13 @@ karlsen-cpu-miner --mining-address karlsen:... --benchmark 60
 | `--benchmark <seconds>` | — | Measure hashrate and exit |
 
 Log verbosity follows `RUST_LOG` (for example `RUST_LOG=debug`).
+
+## Large pages
+
+With 4 KiB pages almost every dataset read also misses the TLB. 2 MiB pages remove most of that cost.
+
+- **Windows:** the miner uses large pages when the user has the *Lock pages in memory* right (the same setting XMRig uses). Run `secpol.msc` → Local Policies → User Rights Assignment → **Lock pages in memory** → add your user, then sign out and back in. The log says `Dataset uses 2 MiB large pages` when it is active. On a long-running PC, free RAM can be too fragmented for 4.5 GiB of large pages; a reboot fixes that.
+- **Linux:** transparent huge pages are requested automatically (`/sys/kernel/mm/transparent_hugepage/enabled` must be `always` or `madvise`).
 
 ## How mass propagation works
 

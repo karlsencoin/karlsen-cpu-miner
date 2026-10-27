@@ -40,7 +40,8 @@ pub const POOLS: &[PoolEntry] = &[
 ];
 
 /// Karlsen treasury address, offered as the wallet default so a first run needs no typing.
-pub const TREASURY_ADDRESS: &str = "karlsen:qzecljlvsd8h3x32ynuttzyya6s26p4p5p0gyztk7p984r25jp0y2s5fpdqhc";
+pub const TREASURY_ADDRESS: &str =
+    "karlsen:qzecljlvsd8h3x32ynuttzyya6s26p4p5p0gyztk7p984r25jp0y2s5fpdqhc";
 
 /// Default address of a karlsen-stratum-bridge running on the same machine.
 pub const LOCAL_BRIDGE_URL: &str = "stratum+tcp://127.0.0.1:5555";

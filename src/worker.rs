@@ -9,16 +9,18 @@ use log::{debug, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::dataset::Dataset;
-use crate::pow::{PowJob, LANES};
+use crate::pow::{PowJob, MAX_LANES};
 
 /// Nonces handed to a thread per atomic fetch. Large enough to keep the shared counter
 /// cold, small enough that a new job is picked up within a few milliseconds.
-const NONCE_CHUNK: u64 = (LANES as u64) * 32;
+const NONCE_CHUNK: u64 = (MAX_LANES as u64) * 16;
 
 /// What a work unit came from, so solutions can be routed back.
 pub enum WorkOrigin {
     /// Solo mining: the block template as received from GetBlockTemplate.
-    Node { template: karlsen_rpc_core::RpcRawBlock },
+    Node {
+        template: karlsen_rpc_core::RpcRawBlock,
+    },
     /// Pool / bridge mining: stratum job id, echoed back exactly as the server sent it
     /// (some servers use strings, others numbers).
     Stratum { job_id: serde_json::Value },
@@ -36,11 +38,24 @@ pub struct WorkUnit {
 }
 
 impl WorkUnit {
-    pub fn new(generation: u64, pow: PowJob, origin: WorkOrigin, nonce_prefix: u64, nonce_free_mask: u64) -> Self {
+    pub fn new(
+        generation: u64,
+        pow: PowJob,
+        origin: WorkOrigin,
+        nonce_prefix: u64,
+        nonce_free_mask: u64,
+    ) -> Self {
         // Random start so several miners on one address do not repeat each other's work.
-        // Aligned to LANES so a lane group never carries into the fixed prefix bits.
-        let start = rand::random::<u64>() & nonce_free_mask & !(LANES as u64 - 1);
-        Self { generation, pow, origin, nonce_prefix, nonce_free_mask, next_nonce: AtomicU64::new(start) }
+        // Aligned to MAX_LANES so a lane group never carries into the fixed prefix bits.
+        let start = rand::random::<u64>() & nonce_free_mask & !(MAX_LANES as u64 - 1);
+        Self {
+            generation,
+            pow,
+            origin,
+            nonce_prefix,
+            nonce_free_mask,
+            next_nonce: AtomicU64::new(start),
+        }
     }
 
     #[inline]
@@ -101,6 +116,8 @@ impl WorkSlot {
 pub struct WorkerConfig {
     pub threads: usize,
     pub pin_threads: bool,
+    /// Nonces hashed together per iteration; one of `pow::LANE_OPTIONS`.
+    pub lanes: usize,
 }
 
 pub struct Stats {
@@ -117,7 +134,11 @@ pub fn spawn_workers(
 ) -> Vec<std::thread::JoinHandle<()>> {
     let cores = core_affinity::get_core_ids().unwrap_or_default();
     if config.pin_threads && cores.len() < config.threads {
-        warn!("{} threads requested but only {} cores reported; some threads will share cores", config.threads, cores.len());
+        warn!(
+            "{} threads requested but only {} cores reported; some threads will share cores",
+            config.threads,
+            cores.len()
+        );
     }
 
     (0..config.threads)
@@ -127,7 +148,12 @@ pub fn spawn_workers(
             let solutions = solutions.clone();
             let stats = stats.clone();
             let shutdown = shutdown.clone();
-            let core = if config.pin_threads && !cores.is_empty() { Some(cores[index % cores.len()]) } else { None };
+            let lanes = config.lanes;
+            let core = if config.pin_threads && !cores.is_empty() {
+                Some(cores[index % cores.len()])
+            } else {
+                None
+            };
             std::thread::Builder::new()
                 .name(format!("karlsen-cpu-miner-{index}"))
                 .spawn(move || {
@@ -136,14 +162,24 @@ pub fn spawn_workers(
                             debug!("worker {index}: could not pin to core {:?}", core);
                         }
                     }
-                    worker_loop(index, &dataset, &slot, &solutions, &stats, &shutdown);
+                    match lanes {
+                        4 => {
+                            worker_loop::<4>(index, &dataset, &slot, &solutions, &stats, &shutdown)
+                        }
+                        16 => {
+                            worker_loop::<16>(index, &dataset, &slot, &solutions, &stats, &shutdown)
+                        }
+                        _ => {
+                            worker_loop::<8>(index, &dataset, &slot, &solutions, &stats, &shutdown)
+                        }
+                    }
                 })
                 .expect("spawning mining thread")
         })
         .collect()
 }
 
-fn worker_loop(
+fn worker_loop<const N: usize>(
     index: usize,
     dataset: &Dataset,
     slot: &WorkSlot,
@@ -166,7 +202,7 @@ fn worker_loop(
             let mut offset = 0;
             while offset < NONCE_CHUNK {
                 let first = unit.nonce(chunk_start.wrapping_add(offset));
-                let values = unit.pow.hash_lanes(first, &source);
+                let values = unit.pow.hash_lanes_n::<N>(first, &source);
                 for (lane, value) in values.iter().enumerate() {
                     if *value <= unit.pow.report_target {
                         let nonce = first.wrapping_add(lane as u64);
@@ -174,13 +210,84 @@ fn worker_loop(
                         if meets_block_target {
                             info!("Block candidate found by thread {index}: nonce {nonce:#018x}");
                         }
-                        let _ = solutions.send(Solution { unit: unit.clone(), nonce, pow_value: *value, meets_block_target });
+                        let _ = solutions.send(Solution {
+                            unit: unit.clone(),
+                            nonce,
+                            pow_value: *value,
+                            meets_block_target,
+                        });
                     }
                 }
-                offset += LANES as u64;
-                stats.hashes.fetch_add(LANES as u64, Ordering::Relaxed);
+                offset += N as u64;
+                stats.hashes.fetch_add(N as u64, Ordering::Relaxed);
             }
         }
     }
     debug!("worker {index} stopped");
+}
+
+/// Measures each lane count with all mining threads on a synthetic job and returns the fastest.
+/// Takes about `LANE_OPTIONS.len() × per_option` (≈ 6 s by default).
+pub fn autotune_lanes(
+    dataset: &Dataset,
+    threads: usize,
+    pin_threads: bool,
+    per_option: std::time::Duration,
+) -> usize {
+    use crate::pow::LANE_OPTIONS;
+    let cores = core_affinity::get_core_ids().unwrap_or_default();
+    let job = PowJob::new(&[0x5a; 32], 1_700_000_000_000, Uint256::ZERO, Uint256::ZERO);
+    let mut best = (8usize, 0f64);
+    for &lanes in &LANE_OPTIONS {
+        let counter = AtomicU64::new(0);
+        let stop = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        std::thread::scope(|scope| {
+            for t in 0..threads {
+                let (counter, stop, job, cores) = (&counter, &stop, &job, &cores);
+                scope.spawn(move || {
+                    if pin_threads && !cores.is_empty() {
+                        core_affinity::set_for_current(cores[t % cores.len()]);
+                    }
+                    let source = dataset.source();
+                    let mut nonce = (t as u64) << 48;
+                    while !stop.load(Ordering::Relaxed) {
+                        match lanes {
+                            4 => drop(job.hash_lanes_n::<4>(nonce, &source)),
+                            16 => drop(job.hash_lanes_n::<16>(nonce, &source)),
+                            _ => drop(job.hash_lanes_n::<8>(nonce, &source)),
+                        }
+                        nonce += lanes as u64;
+                        counter.fetch_add(lanes as u64, Ordering::Relaxed);
+                    }
+                });
+            }
+            std::thread::sleep(per_option);
+            stop.store(true, Ordering::Relaxed);
+        });
+        let rate = counter.load(Ordering::Relaxed) as f64 / started.elapsed().as_secs_f64();
+        info!(
+            "Autotune: {lanes:>2} lanes per thread → {}",
+            crate::format_hashrate(rate)
+        );
+        if rate > best.1 {
+            best = (lanes, rate);
+        }
+    }
+    info!("Autotune: using {} lanes per thread", best.0);
+    best.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::DatasetMode;
+
+    #[test]
+    fn autotune_picks_a_supported_lane_count() {
+        let dataset =
+            Dataset::load(DatasetMode::Light, std::path::Path::new("unused"), 1, false).unwrap();
+        let lanes = autotune_lanes(&dataset, 2, false, std::time::Duration::from_millis(300));
+        assert!(crate::pow::LANE_OPTIONS.contains(&lanes));
+    }
 }

@@ -55,7 +55,12 @@ impl MassAudit {
     }
 
     fn check_template(&mut self, block: &RpcRawBlock) {
-        let zero_mass = block.transactions.iter().skip(1).filter(|tx| tx.mass == 0).count();
+        let zero_mass = block
+            .transactions
+            .iter()
+            .skip(1)
+            .filter(|tx| tx.mass == 0)
+            .count();
         if zero_mass > 0 && !self.warned_zero_mass_in_template {
             warn!(
                 "GetBlockTemplate returned {zero_mass} non-coinbase transaction(s) with mass = 0. \
@@ -70,15 +75,25 @@ impl MassAudit {
         let expected = Self::masses(template);
         let actual = Self::masses(submitted);
         if expected != actual {
-            bail!("mass mismatch between template and submission (template {:?}, submission {:?})", expected, actual);
+            bail!(
+                "mass mismatch between template and submission (template {:?}, submission {:?})",
+                expected,
+                actual
+            );
         }
         Ok(())
     }
 }
 
 pub async fn connect(url: &str) -> Result<GrpcClient> {
-    let url = if url.starts_with("grpc://") { url.to_string() } else { format!("grpc://{url}") };
-    GrpcClient::connect(url.clone()).await.map_err(|e| anyhow!("connecting to karlsend at {url}: {e}"))
+    let url = if url.starts_with("grpc://") {
+        url.to_string()
+    } else {
+        format!("grpc://{url}")
+    };
+    GrpcClient::connect(url.clone())
+        .await
+        .map_err(|e| anyhow!("connecting to karlsend at {url}: {e}"))
 }
 
 pub async fn run(
@@ -91,7 +106,10 @@ pub async fn run(
     let client = Arc::new(connect(&config.url).await?);
     info!("Connected to karlsend at {}", config.url);
     let info = client.get_info().await.context("GetInfo")?;
-    info!("Node version {} · synced: {}", info.server_version, info.is_synced);
+    info!(
+        "Node version {} · synced: {}",
+        info.server_version, info.is_synced
+    );
 
     // Submission task: verifies each candidate on the CPU once more and submits it untouched.
     let submit_client = client.clone();
@@ -104,11 +122,19 @@ pub async fn run(
             if !solution.meets_block_target {
                 continue;
             }
-            let WorkOrigin::Node { template } = &solution.unit.origin else { continue };
+            let WorkOrigin::Node { template } = &solution.unit.origin else {
+                continue;
+            };
 
-            let verified = solution.unit.pow.hash_one(solution.nonce, &submit_dataset.source());
+            let verified = solution
+                .unit
+                .pow
+                .hash_one(solution.nonce, &submit_dataset.source());
             if verified != solution.pow_value || verified > solution.unit.pow.block_target {
-                error!("Discarding nonce {:#018x}: CPU re-verification failed", solution.nonce);
+                error!(
+                    "Discarding nonce {:#018x}: CPU re-verification failed",
+                    solution.nonce
+                );
                 continue;
             }
 
@@ -118,7 +144,8 @@ pub async fn run(
                 error!("Refusing to submit: {err}");
                 continue;
             }
-            let block_hash = karlsen_consensus_core::hashing::header::hash(&Header::from(&block.header));
+            let block_hash =
+                karlsen_consensus_core::hashing::header::hash(&Header::from(&block.header));
             let tx_count = block.transactions.len();
             let total_mass: u64 = block.transactions.iter().map(|tx| tx.mass).sum();
 
@@ -151,7 +178,10 @@ pub async fn run(
     let mut warned_not_synced = false;
 
     while !shutdown.load(Ordering::Relaxed) {
-        match client.get_block_template(config.mining_address.clone(), config.extra_data.clone()).await {
+        match client
+            .get_block_template(config.mining_address.clone(), config.extra_data.clone())
+            .await
+        {
             Ok(response) => {
                 if !response.is_synced && !config.mine_when_not_synced {
                     if !warned_not_synced {
@@ -181,7 +211,13 @@ pub async fn run(
                             template.transactions.len(),
                             header.bits
                         );
-                        slot.publish(WorkUnit::new(generation, pow, WorkOrigin::Node { template }, 0, u64::MAX));
+                        slot.publish(WorkUnit::new(
+                            generation,
+                            pow,
+                            WorkOrigin::Node { template },
+                            0,
+                            u64::MAX,
+                        ));
                         last_pre_pow = Some(pre_pow);
                         last_published = Instant::now();
                     }

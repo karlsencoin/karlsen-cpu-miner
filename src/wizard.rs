@@ -22,7 +22,11 @@ fn read_line(prompt: &str) -> Result<String> {
 
 fn prompt_default(label: &str, default: &str) -> Result<String> {
     let answer = read_line(&format!("  {label} [{default}]: "))?;
-    Ok(if answer.is_empty() { default.to_string() } else { answer })
+    Ok(if answer.is_empty() {
+        default.to_string()
+    } else {
+        answer
+    })
 }
 
 fn prompt_choice(label: &str, max: usize, default: usize) -> Result<usize> {
@@ -69,7 +73,9 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
     println!("  Press Enter to donate the rewards to the Karlsen treasury:");
     println!("  {TREASURY_ADDRESS}");
     let mining_address = loop {
-        let default = previous.map(|c| c.mining_address.as_str()).unwrap_or(TREASURY_ADDRESS);
+        let default = previous
+            .map(|c| c.mining_address.as_str())
+            .unwrap_or(TREASURY_ADDRESS);
         let answer = prompt_default("Wallet address", default)?;
         match Address::try_from(answer.as_str()) {
             Ok(address) if address.prefix.to_string() == "karlsen" => break answer,
@@ -82,7 +88,10 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
     section("Step 2/5 · Where to mine");
     let mut option = 1;
     for pool in POOLS {
-        println!("    {option}. {} · {} · {}", pool.display_name, pool.payout, pool.stratum_url);
+        println!(
+            "    {option}. {} · {} · {}",
+            pool.display_name, pool.payout, pool.stratum_url
+        );
         option += 1;
     }
     let solo_bridge = option;
@@ -94,17 +103,28 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
     let choice = prompt_choice("Select", custom, 1)?;
     let connection = if choice <= POOLS.len() {
         let pool = &POOLS[choice - 1];
-        Connection::Pool { name: pool.display_name.to_string(), url: pool.stratum_url.to_string() }
+        Connection::Pool {
+            name: pool.display_name.to_string(),
+            url: pool.stratum_url.to_string(),
+        }
     } else if choice == solo_bridge {
-        Connection::SoloBridge { url: prompt_default("Bridge stratum URL", LOCAL_BRIDGE_URL)? }
+        Connection::SoloBridge {
+            url: prompt_default("Bridge stratum URL", LOCAL_BRIDGE_URL)?,
+        }
     } else if choice == solo_node {
-        println!("  The node needs --utxoindex. Blocks are submitted exactly as the node built them,");
+        println!(
+            "  The node needs --utxoindex. Blocks are submitted exactly as the node built them,"
+        );
         println!("  so transaction mass is preserved (required after the Crescendo hardfork).");
-        Connection::SoloNode { url: prompt_default("karlsend gRPC URL", LOCAL_NODE_URL)? }
+        Connection::SoloNode {
+            url: prompt_default("karlsend gRPC URL", LOCAL_NODE_URL)?,
+        }
     } else {
         Connection::CustomStratum {
             url: loop {
-                let url = read_line("  Stratum URL (stratum+tcp://host:port or stratum+ssl://host:port): ")?;
+                let url = read_line(
+                    "  Stratum URL (stratum+tcp://host:port or stratum+ssl://host:port): ",
+                )?;
                 if url.contains(':') {
                     break url;
                 }
@@ -115,7 +135,9 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
 
     // Step 3: worker name.
     section("Step 3/5 · Worker name");
-    let default_worker = previous.map(|c| c.worker_name.clone()).unwrap_or_else(|| "karlsen-cpu-miner".to_string());
+    let default_worker = previous
+        .map(|c| c.worker_name.clone())
+        .unwrap_or_else(|| "karlsen-cpu-miner".to_string());
     let worker_name = prompt_default("Worker name", &default_worker)?;
 
     // Step 4: threads.
@@ -123,7 +145,9 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
     let logical = num_cpus::get();
     let physical = num_cpus::get_physical();
     println!("  Detected {physical} physical cores / {logical} logical CPUs.");
-    println!("  FishHashPlus is memory-bound; leave a thread free if this machine runs other services.");
+    println!(
+        "  FishHashPlus is memory-bound; leave a thread free if this machine runs other services."
+    );
     let threads = loop {
         let answer = prompt_default("Mining threads", &logical.to_string())?;
         match answer.parse::<usize>() {
@@ -160,14 +184,31 @@ pub fn run(previous: Option<&MinerConfig>) -> Result<MinerConfig> {
         None
     };
 
-    let config = MinerConfig { mining_address, connection, worker_name, threads, dataset_mode, dataset_file };
+    let config = MinerConfig {
+        mining_address,
+        connection,
+        worker_name,
+        threads,
+        dataset_mode,
+        dataset_file,
+    };
 
     section("Summary");
-    let treasury_note = if config.mining_address == TREASURY_ADDRESS { " (Karlsen treasury)" } else { "" };
+    let treasury_note = if config.mining_address == TREASURY_ADDRESS {
+        " (Karlsen treasury)"
+    } else {
+        ""
+    };
     println!("  Wallet:  {}{treasury_note}", config.mining_address);
     println!("  Mining:  {}", config.connection.describe());
     println!("  Worker:  {}", config.worker_name);
-    println!("  Threads: {}", config.threads.map(|t| t.to_string()).unwrap_or_else(|| format!("{logical} (all)")));
+    println!(
+        "  Threads: {}",
+        config
+            .threads
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| format!("{logical} (all)"))
+    );
     println!("  Dataset: {:?}", config.dataset_mode);
     let start = prompt_default("Save and start? (y/n)", "y")?;
     if !start.eq_ignore_ascii_case("y") && !start.eq_ignore_ascii_case("yes") {

@@ -24,7 +24,9 @@ impl Connection {
     pub fn describe(&self) -> String {
         match self {
             Connection::Pool { name, url } => format!("Pool {name} ({url})"),
-            Connection::SoloBridge { url } => format!("Solo through karlsen-stratum-bridge ({url})"),
+            Connection::SoloBridge { url } => {
+                format!("Solo through karlsen-stratum-bridge ({url})")
+            }
             Connection::SoloNode { url } => format!("Solo directly to karlsend ({url})"),
             Connection::CustomStratum { url } => format!("Custom stratum ({url})"),
         }
@@ -57,13 +59,17 @@ pub fn load() -> Result<Option<MinerConfig>> {
     if !path.exists() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(Some(serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?))
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(Some(
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
+    ))
 }
 
 pub fn save(config: &MinerConfig) -> Result<PathBuf> {
     let path = config_path();
-    std::fs::write(&path, serde_json::to_string_pretty(config)? + "\n").with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, serde_json::to_string_pretty(config)? + "\n")
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
 
@@ -84,7 +90,9 @@ mod dataset_mode_serde {
             "memory" => Ok(DatasetMode::Memory),
             "file" => Ok(DatasetMode::File),
             "light" => Ok(DatasetMode::Light),
-            other => Err(serde::de::Error::custom(format!("unknown dataset mode '{other}'"))),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown dataset mode '{other}'"
+            ))),
         }
     }
 }

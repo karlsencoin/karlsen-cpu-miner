@@ -1740,6 +1740,7 @@ dependencies = [
  "tiny-keccak",
  "tokio",
  "tokio-rustls",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

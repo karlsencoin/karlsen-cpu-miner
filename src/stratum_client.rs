@@ -59,7 +59,12 @@ impl rustls::client::danger::ServerCertVerifier for AcceptPoolCertificate {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
@@ -68,7 +73,12 @@ impl rustls::client::danger::ServerCertVerifier for AcceptPoolCertificate {
         cert: &rustls::pki_types::CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
@@ -84,13 +94,24 @@ struct Session {
 
 impl Default for Session {
     fn default() -> Self {
-        Self { extranonce_prefix: 0, extranonce_free_mask: u64::MAX, difficulty: 1.0 }
+        Self {
+            extranonce_prefix: 0,
+            extranonce_free_mask: u64::MAX,
+            difficulty: 1.0,
+        }
     }
 }
 
 /// Splits a stratum URL into (host:port, use TLS).
 fn parse_url(url: &str) -> (String, bool) {
-    for (scheme, tls) in [("stratum+ssl://", true), ("stratum+tls://", true), ("ssl://", true), ("stratum+tcp://", false), ("stratum://", false), ("tcp://", false)] {
+    for (scheme, tls) in [
+        ("stratum+ssl://", true),
+        ("stratum+tls://", true),
+        ("ssl://", true),
+        ("stratum+tcp://", false),
+        ("stratum://", false),
+        ("tcp://", false),
+    ] {
         if let Some(rest) = url.strip_prefix(scheme) {
             return (rest.to_string(), tls);
         }
@@ -101,27 +122,48 @@ fn parse_url(url: &str) -> (String, bool) {
 trait StratumStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> StratumStream for T {}
 
-async fn open_stream(address: &str, tls: bool, insecure_tls: bool) -> Result<Box<dyn StratumStream>> {
-    let tcp = TcpStream::connect(address).await.with_context(|| format!("connecting to {address}"))?;
+async fn open_stream(
+    address: &str,
+    tls: bool,
+    insecure_tls: bool,
+) -> Result<Box<dyn StratumStream>> {
+    let tcp = TcpStream::connect(address)
+        .await
+        .with_context(|| format!("connecting to {address}"))?;
     tcp.set_nodelay(true)?;
     if !tls {
         return Ok(Box::new(tcp));
     }
-    let host = address.rsplit_once(':').map(|(h, _)| h).unwrap_or(address).to_string();
+    let host = address
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(address)
+        .to_string();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()?;
     let config = if !insecure_tls {
         // Same model as KarlsenMiner's SChannel path (SCH_CRED_AUTO_CRED_VALIDATION): the
         // operating system's certificate store and chain building decide, so a pool whose
         // chain Windows/macOS can complete is accepted.
         let verifier = rustls_platform_verifier::Verifier::new().with_provider(provider.clone());
-        builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(verifier))
+            .with_no_client_auth()
     } else {
-        builder.dangerous().with_custom_certificate_verifier(Arc::new(AcceptPoolCertificate(provider))).with_no_client_auth()
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptPoolCertificate(provider)))
+            .with_no_client_auth()
     };
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
-    let server_name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| anyhow!("invalid TLS host name {host}"))?;
-    let stream = connector.connect(server_name, tcp).await.with_context(|| format!("TLS handshake with {host}"))?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.clone())
+        .map_err(|_| anyhow!("invalid TLS host name {host}"))?;
+    let stream = connector
+        .connect(server_name, tcp)
+        .await
+        .with_context(|| format!("TLS handshake with {host}"))?;
     Ok(Box::new(stream))
 }
 
@@ -143,25 +185,36 @@ fn parse_extranonce(hex: &str) -> Result<(u64, u64)> {
 /// * `[id, "<80 hex>"]` — BzMiner style: 32 header bytes + 8 timestamp bytes (LE)
 /// * `[id, "<64 hex>", timestamp]` — IceRiver style
 fn parse_job(params: &Value) -> Result<([u8; 32], u64)> {
-    let header = params.get(1).ok_or_else(|| anyhow!("mining.notify without header"))?;
+    let header = params
+        .get(1)
+        .ok_or_else(|| anyhow!("mining.notify without header"))?;
     if let Some(hex) = header.as_str() {
         let bytes = decode_hex(hex.trim_start_matches("0x"))?;
         let mut pre_pow = [0u8; 32];
         return match bytes.len() {
             40 => {
                 pre_pow.copy_from_slice(&bytes[..32]);
-                Ok((pre_pow, u64::from_le_bytes(bytes[32..40].try_into().unwrap())))
+                Ok((
+                    pre_pow,
+                    u64::from_le_bytes(bytes[32..40].try_into().unwrap()),
+                ))
             }
             32 => {
                 pre_pow.copy_from_slice(&bytes);
-                let ts = params.get(2).and_then(Value::as_u64).ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
+                let ts = params
+                    .get(2)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
                 Ok((pre_pow, ts))
             }
             n => bail!("unsupported mining.notify header ({n} bytes)"),
         };
     }
     let pre_pow = parse_pre_pow(header)?;
-    let ts = params.get(2).and_then(Value::as_u64).ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
+    let ts = params
+        .get(2)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("mining.notify without timestamp"))?;
     Ok((pre_pow, ts))
 }
 
@@ -169,17 +222,24 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
     if hex.len() % 2 != 0 {
         bail!("odd-length hex string");
     }
-    (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(Into::into)).collect()
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(Into::into))
+        .collect()
 }
 
 fn parse_pre_pow(value: &Value) -> Result<[u8; 32]> {
-    let words = value.as_array().ok_or_else(|| anyhow!("mining.notify header is not an array of 4 u64 words"))?;
+    let words = value
+        .as_array()
+        .ok_or_else(|| anyhow!("mining.notify header is not an array of 4 u64 words"))?;
     if words.len() != 4 {
         bail!("mining.notify header has {} words, expected 4", words.len());
     }
     let mut out = [0u8; 32];
     for (i, w) in words.iter().enumerate() {
-        let w = w.as_u64().ok_or_else(|| anyhow!("mining.notify header word is not a u64"))?;
+        let w = w
+            .as_u64()
+            .ok_or_else(|| anyhow!("mining.notify header word is not a u64"))?;
         out[i * 8..i * 8 + 8].copy_from_slice(&w.to_le_bytes());
     }
     Ok(out)
@@ -197,7 +257,10 @@ pub async fn run(
             Ok(()) => backoff = Duration::from_secs(1),
             Err(err) => {
                 slot.pause();
-                error!("Stratum session ended: {err:#}. Reconnecting in {}s", backoff.as_secs());
+                error!(
+                    "Stratum session ended: {err:#}. Reconnecting in {}s",
+                    backoff.as_secs()
+                );
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -214,7 +277,10 @@ async fn session(
 ) -> Result<()> {
     let (address, tls) = parse_url(&config.url);
     let stream = open_stream(&address, tls, config.insecure_tls).await?;
-    info!("Connected to stratum {address}{}", if tls { " (TLS)" } else { "" });
+    info!(
+        "Connected to stratum {address}{}",
+        if tls { " (TLS)" } else { "" }
+    );
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut lines = BufReader::new(read_half).lines();
 
@@ -224,7 +290,13 @@ async fn session(
     let mut send = |method: &str, params: Value| {
         let id = next_id;
         next_id += 1;
-        (id, format!("{}\n", json!({ "id": id, "jsonrpc": "2.0", "method": method, "params": params })))
+        (
+            id,
+            format!(
+                "{}\n",
+                json!({ "id": id, "jsonrpc": "2.0", "method": method, "params": params })
+            ),
+        )
     };
 
     let (_, msg) = send("mining.subscribe", json!([agent]));
@@ -320,9 +392,18 @@ mod tests {
 
     #[test]
     fn url_schemes() {
-        assert_eq!(parse_url("stratum+ssl://pool.woolypooly.com:3132"), ("pool.woolypooly.com:3132".into(), true));
-        assert_eq!(parse_url("stratum+tcp://127.0.0.1:5555"), ("127.0.0.1:5555".into(), false));
-        assert_eq!(parse_url("127.0.0.1:5555"), ("127.0.0.1:5555".into(), false));
+        assert_eq!(
+            parse_url("stratum+ssl://pool.woolypooly.com:3132"),
+            ("pool.woolypooly.com:3132".into(), true)
+        );
+        assert_eq!(
+            parse_url("stratum+tcp://127.0.0.1:5555"),
+            ("127.0.0.1:5555".into(), false)
+        );
+        assert_eq!(
+            parse_url("127.0.0.1:5555"),
+            ("127.0.0.1:5555".into(), false)
+        );
     }
 
     #[test]
@@ -336,10 +417,18 @@ mod tests {
     fn big_job_hex_matches_word_layout() {
         // Same header expressed in both formats karlsen-stratum-bridge produces.
         let header: Vec<u8> = (0u8..32).collect();
-        let words: Vec<u64> = header.chunks(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect();
+        let words: Vec<u64> = header
+            .chunks(8)
+            .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+            .collect();
         let ts = 1_761_000_000_123u64;
         let mut hex: String = header.iter().map(|b| format!("{b:02x}")).collect();
-        hex.push_str(&ts.to_le_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
+        hex.push_str(
+            &ts.to_le_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+        );
         let a = parse_job(&json!(["1", words, ts])).unwrap();
         let b = parse_job(&json!(["1", hex])).unwrap();
         assert_eq!(a, b);

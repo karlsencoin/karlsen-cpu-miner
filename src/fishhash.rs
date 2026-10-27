@@ -129,7 +129,13 @@ pub fn calculate_dataset_item(light_cache: &[LightItem], index: usize) -> Item {
 
 /// Fills `dst` (a byte slice holding consecutive dataset items starting at `first_item`)
 /// using `threads` worker threads. `progress` counts finished items.
-pub fn fill_dataset(dst: &mut [u8], first_item: usize, light_cache: &[LightItem], threads: usize, progress: &AtomicUsize) {
+pub fn fill_dataset(
+    dst: &mut [u8],
+    first_item: usize,
+    light_cache: &[LightItem],
+    threads: usize,
+    progress: &AtomicUsize,
+) {
     assert_eq!(dst.len() % DATASET_ITEM_BYTES, 0);
     let items = dst.len() / DATASET_ITEM_BYTES;
     let threads = threads.max(1);
@@ -270,7 +276,10 @@ fn collapse(mix: &Item) -> [u8; 32] {
 /// Every round first computes all lanes' indices and prefetches their 3·N items, then
 /// mixes. With N = 4..8 a single core keeps 12..24 DRAM reads in flight.
 #[inline(always)]
-pub fn fishhashplus_kernel_lanes<const N: usize>(seeds: &[[u8; 32]; N], source: &DatasetSource) -> [[u8; 32]; N] {
+pub fn fishhashplus_kernel_lanes<const N: usize>(
+    seeds: &[[u8; 32]; N],
+    source: &DatasetSource,
+) -> [[u8; 32]; N] {
     let mut mixes: [Item; N] = std::array::from_fn(|lane| seed_mix(&seeds[lane]));
     let mut indices = [[0u32; 3]; N];
 
