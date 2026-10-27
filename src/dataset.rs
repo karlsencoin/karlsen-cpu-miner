@@ -68,7 +68,10 @@ impl Dataset {
                 Storage::Light
             }
             DatasetMode::Memory => Storage::Anonymous(build_anonymous(&light_cache, build_threads)?),
-            DatasetMode::File => Storage::File(open_or_build_file(file_path, &light_cache, build_threads)?),
+            DatasetMode::File => Storage::File(
+                open_or_build_file(file_path, &light_cache, build_threads)
+                    .with_context(|| format!("dataset file {}", file_path.display()))?,
+            ),
         };
         Ok(Arc::new(Self { light_cache, storage }))
     }
@@ -83,10 +86,18 @@ impl Dataset {
 }
 
 pub fn default_dataset_path() -> PathBuf {
+    // Windows: %LOCALAPPDATA% only. HOME is often set by Git/MSYS to a Unix-style path
+    // ("/c/Users/...") or an unmapped drive that Windows cannot create directories in.
+    #[cfg(windows)]
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && p.exists())
+        .or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.to_path_buf())))
+        .unwrap_or_else(|| PathBuf::from("."));
+    #[cfg(not(windows))]
     let base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
     base.join("karlsen-cpu-miner").join("fishhash-plus-dataset.bin")
 }
@@ -190,7 +201,13 @@ fn open_or_build_file(path: &Path, light_cache: &[LightItem], threads: usize) ->
         std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     info!("Creating dataset file {} — {}", path.display(), human_gib(FILE_DATA_OFFSET + FULL_DATASET_BYTES));
-    let mut file = OpenOptions::new().create(true).read(true).write(true).truncate(true).open(path)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .with_context(|| format!("creating {}", path.display()))?;
     write_header(&mut file)?;
     file.set_len((FILE_DATA_OFFSET + FULL_DATASET_BYTES) as u64)?;
     {

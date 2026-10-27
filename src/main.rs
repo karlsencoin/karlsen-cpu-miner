@@ -157,6 +157,9 @@ async fn main() -> Result<()> {
 
     let dataset_mode = config.dataset_mode;
     let dataset_path = config.dataset_file.clone().unwrap_or_else(default_dataset_path);
+    if dataset_mode == DatasetMode::File {
+        info!("Dataset file: {}", dataset_path.display());
+    }
     let dataset = tokio::task::spawn_blocking(move || Dataset::load(dataset_mode, &dataset_path, build_threads)).await??;
 
     let slot = Arc::new(WorkSlot::default());

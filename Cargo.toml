@@ -1,6 +1,6 @@
 [package]
 name = "karlsen-cpu-miner"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 rust-version = "1.88.0"
 description = "CPU miner for Karlsen (KarlsenHashV2 / FishHashPlus) with solo gRPC and stratum modes"
