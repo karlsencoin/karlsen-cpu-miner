@@ -81,9 +81,10 @@ struct Args {
     #[arg(long)]
     mine_when_not_synced: bool,
 
-    /// Only accept stratum TLS certificates signed by a public CA (most pools are self-signed).
+    /// Accept any stratum TLS certificate (for pools with self-signed certificates).
+    /// By default certificates are verified against the operating system's certificate store.
     #[arg(long)]
-    strict_tls: bool,
+    insecure_tls: bool,
 
     /// Run a hashrate benchmark for this many seconds instead of mining.
     #[arg(long)]
@@ -219,7 +220,7 @@ async fn main() -> Result<()> {
                         url,
                         mining_address: config.mining_address.clone(),
                         worker_name: config.worker_name.clone(),
-                        strict_tls: args.strict_tls,
+                        insecure_tls: args.insecure_tls,
                     },
                     slot.clone(),
                     solution_rx,

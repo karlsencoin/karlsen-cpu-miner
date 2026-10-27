@@ -31,13 +31,13 @@ pub struct StratumConfig {
     pub url: String,
     pub mining_address: String,
     pub worker_name: String,
-    /// Require a pool certificate signed by a public CA. Off by default: most mining pools
-    /// use self-signed certificates, and other miners (lolMiner, SRBMiner, …) accept them.
-    pub strict_tls: bool,
+    /// Accept any pool certificate (still encrypted). Off by default: certificates are checked
+    /// against the operating system's store, like KarlsenMiner's SChannel connection.
+    pub insecure_tls: bool,
 }
 
 /// Accepts any server certificate but still checks the handshake signatures, so the
-/// connection is encrypted. Used for pools with self-signed certificates.
+/// connection is encrypted. Only used with --insecure-tls (pools with self-signed certificates).
 #[derive(Debug)]
 struct AcceptPoolCertificate(Arc<rustls::crypto::CryptoProvider>);
 
@@ -101,7 +101,7 @@ fn parse_url(url: &str) -> (String, bool) {
 trait StratumStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> StratumStream for T {}
 
-async fn open_stream(address: &str, tls: bool, strict_tls: bool) -> Result<Box<dyn StratumStream>> {
+async fn open_stream(address: &str, tls: bool, insecure_tls: bool) -> Result<Box<dyn StratumStream>> {
     let tcp = TcpStream::connect(address).await.with_context(|| format!("connecting to {address}"))?;
     tcp.set_nodelay(true)?;
     if !tls {
@@ -110,10 +110,12 @@ async fn open_stream(address: &str, tls: bool, strict_tls: bool) -> Result<Box<d
     let host = address.rsplit_once(':').map(|(h, _)| h).unwrap_or(address).to_string();
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
-    let config = if strict_tls {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        builder.with_root_certificates(roots).with_no_client_auth()
+    let config = if !insecure_tls {
+        // Same model as KarlsenMiner's SChannel path (SCH_CRED_AUTO_CRED_VALIDATION): the
+        // operating system's certificate store and chain building decide, so a pool whose
+        // chain Windows/macOS can complete is accepted.
+        let verifier = rustls_platform_verifier::Verifier::new().with_provider(provider.clone());
+        builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()
     } else {
         builder.dangerous().with_custom_certificate_verifier(Arc::new(AcceptPoolCertificate(provider))).with_no_client_auth()
     };
@@ -177,7 +179,7 @@ async fn session(
     shutdown: &AtomicBool,
 ) -> Result<()> {
     let (address, tls) = parse_url(&config.url);
-    let stream = open_stream(&address, tls, config.strict_tls).await?;
+    let stream = open_stream(&address, tls, config.insecure_tls).await?;
     info!("Connected to stratum {address}{}", if tls { " (TLS)" } else { "" });
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut lines = BufReader::new(read_half).lines();
