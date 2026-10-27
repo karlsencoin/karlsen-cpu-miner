@@ -102,6 +102,7 @@ karlsen-cpu-miner --mining-address karlsen:... --benchmark 60
 | `-a, --mining-address` | — | Address that receives the rewards |
 | `--node` | — | karlsend gRPC endpoint (solo mode) |
 | `--stratum` | — | Stratum endpoint (bridge / pool mode), `stratum+tcp://` or `stratum+ssl://` |
+| `--strict-tls` | off | Only accept pool TLS certificates from a public CA (pools usually use self-signed certificates) |
 | `--worker-name` | `karlsen-cpu-miner` | Worker name sent to the stratum server |
 | `-t, --threads` | all logical CPUs | Mining threads |
 | `--no-pin` | off | Do not pin threads to cores |

@@ -31,6 +31,49 @@ pub struct StratumConfig {
     pub url: String,
     pub mining_address: String,
     pub worker_name: String,
+    /// Require a pool certificate signed by a public CA. Off by default: most mining pools
+    /// use self-signed certificates, and other miners (lolMiner, SRBMiner, …) accept them.
+    pub strict_tls: bool,
+}
+
+/// Accepts any server certificate but still checks the handshake signatures, so the
+/// connection is encrypted. Used for pools with self-signed certificates.
+#[derive(Debug)]
+struct AcceptPoolCertificate(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for AcceptPoolCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
 }
 
 struct Session {
@@ -58,19 +101,22 @@ fn parse_url(url: &str) -> (String, bool) {
 trait StratumStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
 impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> StratumStream for T {}
 
-async fn open_stream(address: &str, tls: bool) -> Result<Box<dyn StratumStream>> {
+async fn open_stream(address: &str, tls: bool, strict_tls: bool) -> Result<Box<dyn StratumStream>> {
     let tcp = TcpStream::connect(address).await.with_context(|| format!("connecting to {address}"))?;
     tcp.set_nodelay(true)?;
     if !tls {
         return Ok(Box::new(tcp));
     }
     let host = address.rsplit_once(':').map(|(h, _)| h).unwrap_or(address).to_string();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
+    let config = if strict_tls {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        builder.with_root_certificates(roots).with_no_client_auth()
+    } else {
+        builder.dangerous().with_custom_certificate_verifier(Arc::new(AcceptPoolCertificate(provider))).with_no_client_auth()
+    };
     let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
     let server_name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|_| anyhow!("invalid TLS host name {host}"))?;
     let stream = connector.connect(server_name, tcp).await.with_context(|| format!("TLS handshake with {host}"))?;
@@ -131,7 +177,7 @@ async fn session(
     shutdown: &AtomicBool,
 ) -> Result<()> {
     let (address, tls) = parse_url(&config.url);
-    let stream = open_stream(&address, tls).await?;
+    let stream = open_stream(&address, tls, config.strict_tls).await?;
     info!("Connected to stratum {address}{}", if tls { " (TLS)" } else { "" });
     let (read_half, mut write_half) = tokio::io::split(stream);
     let mut lines = BufReader::new(read_half).lines();
